@@ -103,7 +103,7 @@ Section goose_lang.
     | baseT unitBT => #()
     | baseT stringBT => #(str"")
     | mapValT kt vt => MapNilV (zero_val vt)
-    | chanValT vt => ChannelClosedV (zero_val vt)
+    | chanValT vt => NilChannelV
     | prodT t1 t2 => (zero_val t1, zero_val t2)
     | listT t => InjLV (LitV LitUnit)
     | sumT t1 t2 => InjLV (zero_val t1)
@@ -576,11 +576,11 @@ Section goose_lang.
   Qed.
   *)
 
-  Definition chanT (vt:ty) : ty := (prodT ptrT ptrT).
+  Definition chanT (vt:ty) : ty := sumT unitT (prodT ptrT ptrT).
 
   Definition NewChan (t:ty) : val :=
   λ: "cap",
-    let: "chanref" := Alloc (InjR (Var "cap", Var "cap", ChannelNilV (zero_val t))) in
+    let: "chanref" := Alloc (InjR (Var "cap", Var "cap", ChannelEmptyV (zero_val t))) in
     let: "lock" := lock.new #() in
     (InjR (Var "chanref", Var "lock"))
   .
