@@ -576,13 +576,13 @@ Section goose_lang.
   Qed.
   *)
 
-  Definition chanT (vt:ty) : ty := sumT unitT (prodT ptrT ptrT).
+  Definition chanT (vt:ty) : ty := sumT unitT (prodT (prodT uint64T ptrT) ptrT).
 
   Definition NewChan (t:ty) : val :=
   λ: "cap",
-    let: "chanref" := Alloc (InjR (Var "cap", Var "cap", ChannelEmptyV (zero_val t))) in
+    let: "chanref" := Alloc (InjR (Var "cap", (ChanConsEmptyV (zero_val t)))) in
     let: "lock" := lock.new #() in
-    (InjR (Var "chanref", Var "lock"))
+    (InjR (Var "cap", Var "chanref", Var "lock"))
   .
 End goose_lang.
 

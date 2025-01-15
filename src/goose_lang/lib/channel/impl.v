@@ -4,12 +4,10 @@ From Perennial.goose_lang.lib Require Import lock.impl.
 
 (** * Channel library *)
 Notation NilChannelV := (InjLV #()) (only parsing).
-Notation ChannelV chanref lock := (InjRV (PairV chanref lock)) (only parsing).
+Notation ChannelV cap chanref lock := (InjRV (cap, chanref, lock)) (only parsing).
 
-Notation ChanStructV cap eff_cap closed content: (PairV (PairV (PairV cap eff_cap) closed) content) (only parsing).
-
-(* Notation ChannelClosedV cap content := (InjLV (PairV cap content)) (only parsing). *)
-(* Notation ChannelOpenV cap eff_cap content := (InjRV (cap, eff_cap, content)) (only parsing). *)
+Notation ChannelClosedV content := (InjLV content) (only parsing).
+Notation ChannelOpenV eff_cap content := (InjRV (eff_cap, content)) (only parsing).
 
 Notation ChanConsEmptyV zero_val := (InjLV zero_val) (only parsing).
 Notation ChanConsV elem cons:= (InjRV (elem, cons)) (only parsing).
@@ -19,91 +17,75 @@ Context {ext:ffi_syntax}.
 Context `{ext_ty: ext_types}.
 Local Coercion Var' (s:string) : expr := Var s.
 
-  (* 
-  infinite loop for nil channels
-  
-  Definition Assume: val :=
-  λ: "cond", if: Var "cond" then #()
-             else (rec: "loop" <> := Var "loop" #()) #(). *)
-
 Definition CloseChan: val :=
   λ: "channel",
     match: "channel" with
       InjL "nullv" => Panic("close of nil channel")
     | InjR "chan" =>
-      match: "chan" with
-        InjL "closed" => Panic("close of closed channel")
-      | InjR "capcon" => 
-          let: "cap" := Fst (Fst "capcon") in
-          let: "con" := Snd "capcon" in
-          "channel" <- InjL ("cap", "con")
-      end
+        let: "cap" := Fst (Fst "chan") in
+        let: "chanref" := Snd (Fst "chan") in
+        let: "lock" := Snd "chan" in
+        lock.acquire "lock";;
+        match: !"chanref" with
+          InjL "empty" => Panic ("close closed channel")
+        | InjR "open" =>
+            let: "con" := Snd "open" in
+              "chanref" <- InjL "con";;
+              lock.release "lock"
+        end
     end.
 
 Definition ChanCap: val :=
   λ: "channel",
     match: "channel" with
       InjL "nullv" => #0
-    | InjR "chan" =>
-      match: "chan" with
-        InjL "closed" => Fst "closed"
-      | InjR "capcon" => Fst (Fst "capcon")
-      end
+    | InjR "chan" => Fst (Fst "chan")
     end.
 
-
-(* return value: (return element, channel is open, return is valid) *)
+(* return value: (return element, channel is non-empty, return is valid) *)
 Definition InnerReceive: val :=
   λ: "chanref",
-  (rec: "chanRec" "c" :=
-    match: "c" with
-      InjL "closed" => 
-        let: "cap" := Fst "closed" in
-        let: "con" := Snd "closed" in
-        match: "con" with
-          InjL "nullV" => ("nullV", #false, #true)
-        | InjR "elemcon" => 
-            let: "elem" := Fst "elemcon" in
-            let: "con2" := Snd "elemcon" in
-              "chanref" <- InjL ("cap", "con2");;
+    match: !"chanref" with
+      InjL "closed" =>
+        match: "closed" with
+          InjL "empty" => ("empty", #false, #true)
+        | InjR "con" =>
+            let: "elem" := Fst "con" in
+            let: "rest" := Snd "con" in
+              "chanref" <- InjL("rest");;
               ("elem", #true, #true)
         end
-    | InjR "capcon" =>
-        let: "cap" := Fst (Fst "capcon") in
-        let: "eff_cap" := Snd (Fst "capcon") in
-        let: "con" := Snd "capcon" in
+    | InjR "open" =>
+        let: "eff_cap" := Fst "open" in
+        let: "con" := Snd "open" in
         match: "con" with
-          InjL "nullV" => ("nullV", #true, #false)
-        | InjR "elemcon" =>
-          let: "elem" := Fst "elemcon" in
-          let: "con" := Snd "elemcon" in
-          "chanref" <- InjR ("cap", "eff_cap", "con");;
-          ("elem", #true, #true)
+          InjL "empty" => ("empty", #false, #false)
+        | InjR "con" =>
+            let: "elem" := Fst "con" in
+            let: "rest" := Snd "con" in
+              "chanref" <- InjR("eff_cap", "rest");;
+              ("elem", #true, #true)
         end
-  end) (!"chanref").
+    end.
 
 Definition IncCap: val :=
   λ: "chanref",
-    let: "c" := !"chanref" in
-    match: "c" with 
-      InjL "nullV" => #()
-    | InjR "capcon" =>
-      let: "cap" := Fst (Fst "capcon") in
-      let: "eff_cap" := Snd (Fst "capcon") in
-      let: "con" := Snd "capcon" in
-      "chanref" <- InjR ("cap", (#1 + "eff_cap"), "con")
+    match: !"chanref" with
+      InjL "closed" => #()
+    | InjR "open" =>
+        let: "eff_cap" := Fst "open" in
+        let: "con" := Snd "open" in
+        "chanref" <- InjR (#1 + "eff_cap", "con")
     end.
 
 Definition DecCap: val :=
   λ: "chanref",
-    let: "c" := !"chanref" in
-    match: "c" with 
-      InjL "nullV" => #()
-    | InjR "capcon" =>
-      let: "cap" := Fst (Fst "capcon") in
-      let: "eff_cap" := Snd (Fst "capcon") in
-      let: "con" := Snd "capcon" in
-      "chanref" <- InjR ("cap", "eff_cap" - #1, "con")
+    match: !"chanref" with
+      InjL "closed" => #()
+    | InjR "open" =>
+      let: "eff_cap" := Fst "open" in
+      let: "con" := Snd "open" in
+      "chanref" <- InjR("eff_cap" - #1, "con")
     end.
 
 Definition TryReceive: val :=
@@ -122,14 +104,15 @@ Definition ChannelReceive: val :=
   match: "channel" with
     InjL "nullV" => Assume
   | InjR "chan" =>
-      let: "chanref" := Fst "chan" in
+      let: "cap" := Fst (Fst "chan") in
+      let: "chanref" := Snd (Fst "chan") in
       let: "lock" := Snd "chan" in
       (rec: "chanRec" "c" :=
         let: "r" := TryReceive "c" "lock" in
         let: "v" := Fst (Fst ("r")) in
-        let: "open" := Snd (Fst ("r")) in
+        let: "non-empty" := Snd (Fst ("r")) in
         let: "valid" := Snd "r" in
-          if: "valid" then ("v", "open")
+          if: "valid" then ("v", "non-empty")
           else "chanRec" "c"
       ) ("chanref")
   end.
@@ -142,29 +125,19 @@ Definition ChanLen': val :=
       | InjR "content" => #1 + "chanLen" (Snd "content")
      end) ("chancon").
 
-Definition ChanEffLen: val :=
-  λ: "channel",
-    let: "chanref" := Fst "channel" in
-    let: "lock" := Snd "channel" in
-      lock.acquire "lock";;
-      let: "r" := (rec: "chanLen" "c" :=
-        match: "c" with
-          InjL "closed" => 
-            let: "con" := (Snd "closed") in (ChanLen' "con")
-        | InjR "capcon" =>
-            let: "con" := (Snd "capcon") in (ChanLen' "con")
-        end) (!"chanref") in (lock.release "lock";; "r").
-
 Definition ChanLen: val :=
   λ: "channel",
     match: "channel" with
       InjL "nullv" => #0
     | InjR "chan" =>
-        let: "cap" := ChanCap "channel" in
-        let: "con" := Snd "chan" in
-        let: "eff_len" := ChanEffLen "con" in
-          if: "eff_len" < "cap" then "eff_len"
-          else "cap"
+        let: "cap" := Fst (Fst "chan") in
+        let: "chanref" := Snd (Fst "chan") in
+        let: "lock" := Snd "chan" in
+          lock.acquire "lock";;
+          let: "eff_len" := (let: "con" := Snd "chanref" in  ChanLen' "con") in
+            lock.release "lock";; 
+            if: "eff_len" < "cap" then "eff_len"
+            else "cap"
     end.
 
 Definition ChanAppend: val :=
@@ -182,17 +155,16 @@ Definition ChanAppend: val :=
 Definition TrySend: val :=
   λ: "chanref" "lock" "v",
     lock.acquire "lock";;
-    match: (! "chanref") with 
-      InjL "nullV" => Panic ("send on closed channel")
-    | InjR "capcon" =>
-        let: "cap" := Fst (Fst "capcon") in
-        let: "eff_cap" := Snd (Fst "capcon") in
-        let: "con" := Snd "capcon" in
+    match: !"chanref" with
+      InjL "empty" => Panic ("send on closed channel")
+    | InjR "open" =>
+        let: "eff_cap" := Fst "open" in
+        let: "con" := Snd "open" in
         let: "len" := ChanLen' "con" in
-          if: "eff_cap" > "len" then 
-            "chanref" <- InjR ("cap", "eff_cap", ChanAppend "con" "v");;
-            lock.release "lock";;#true
-          else lock.release "lock";;#false
+        if: "eff_cap" > "len" then
+          "chanref" <- InjR ("eff_cap", ChanAppend "con" "v");;
+          lock.release "lock";;#true
+        else lock.release "lock";;#false
     end.
 
 Definition Assume: val :=
@@ -204,14 +176,14 @@ Definition ChannelSend: val :=
   match: "channel" with
     InjL "nullV" => Assume
   | InjR "chan" =>
-      let: "chanref" := Fst "chan" in
+      let: "cap" := Fst (Fst "chan") in
+      let: "chanref" := Snd (Fst "chan") in
       let: "lock" := Snd "chan" in
       (rec: "chanSend" "c" :=
         let: "r" := TrySend "c" "lock" "v" in
-          if: "r" then #true
+          if: "r" then #()
           else "chanSend" "c"
       ) ("chanref")
   end.
-
 
 End goose_lang.

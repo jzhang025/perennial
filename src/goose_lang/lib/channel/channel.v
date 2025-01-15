@@ -34,19 +34,14 @@ Definition peek (zero: val) (l : list val): val :=
     | cons x l' => x
     end.
 
-Definition closed_and_empty (closed : bool) (l : list val): bool :=
-  andb closed
-  (match l with
-  | nil => true
-  | cons x l' => false
-  end).
+Definition non_empty (l : list val): bool :=
+  match l with
+  | nil => false
+  | cons x l' => true
+  end.
 
 Definition valid_return (closed : bool) (l : list val): bool :=
-    orb closed
-    (match l with
-    | nil => false
-    | cons x l' => true
-    end).
+    orb closed (non_empty l).
 
 Definition tail (l : list val): list val :=
     match l with
@@ -55,24 +50,16 @@ Definition tail (l : list val): list val :=
     end.
 
 
-Definition own_chan chanref (cap: Z) (eff_cap: Z) (closed: bool) ty (l: list val): iProp Σ :=
-    (if closed then chanref ↦ ChannelClosedV #cap (chan_contents (zero_val ty) l)
-    else chanref ↦ ChannelOpenV #cap #eff_cap (chan_contents (zero_val ty) l)
-    )%I.
-(* Definition own_chan chanref (cap: Z) (eff_cap: Z) (closed: bool) ty (l: list val): iProp Σ :=
-    (if closed then 
-      "Hchanref" ∷ chanref ↦ ChannelClosedV #cap (zero_val ty) ∗ 
-      "%Hempty" ∷ ⌜l = nil⌝
-    else chanref ↦ ChannelOpenV #cap #eff_cap (chan_contents (zero_val ty) l)
-    )%I. *)
-    (* ([∗ list] _ ↦ elem ∈ l, P elem). *)
+Definition own_chan (chanref: loc) (eff_cap: Z) (closed: bool) ty (l: list val) (P : val -> iProp Σ): iProp Σ :=
+  ⌜has_zero ty⌝ ∗ (if closed then chanref ↦ ChannelClosedV (chan_contents (zero_val ty) l)
+  else chanref ↦ ChannelOpenV #eff_cap (chan_contents (zero_val ty) l))%I
+  ∗ ([∗ list] _ ↦ elem ∈ l, P elem ∗ ⌜val_ty elem ty⌝).
 
-Definition is_channel_alloc chanref lk closed ty (P : val -> iProp Σ): iProp Σ :=
-  is_lock nroot lk (∃ cap eff_cap l, own_chan chanref cap eff_cap closed ty l ∗ ⌜has_zero ty⌝ ∗
-        ([∗ list] _ ↦ elem ∈ l, P elem ∗ ⌜val_ty elem ty⌝)).
+Definition is_channel_alloc (chanref: loc) lk (closed: bool) ty (P : val -> iProp Σ): iProp Σ :=
+  is_lock nroot lk (∃ eff_cap l, own_chan chanref eff_cap closed ty l P).
 
 Definition is_channel c closed ty (P : val -> iProp Σ): iProp Σ :=
-  ⌜c = InjLV #()⌝ ∗ ⌜has_zero ty⌝ ∨ (∃ chanref lk, is_channel_alloc chanref lk closed ty P ∗ ⌜c = InjRV (#chanref, lk)⌝).
+  ⌜c = InjLV #()⌝ ∗ ⌜has_zero ty⌝ ∨ (∃ cap chanref lk, is_channel_alloc chanref lk closed ty P ∗ ⌜c = InjRV (cap, #chanref, lk)⌝).
 
 Theorem nil_chan ty P:
   ⊢(⌜has_zero ty⌝ -∗ is_channel (InjLV #()) false ty P)%I.
@@ -83,15 +70,16 @@ Proof.
   done.
 Qed.
 
-Theorem wp_NewChan E t (cap : Z) P:
-  {{{ ⌜has_zero t⌝ }}}
-    NewChan t #(cap) @ E
+Theorem wp_NewChan E ty (cap : Z) P:
+  {{{ ⌜has_zero ty⌝ }}}
+    NewChan ty #(cap) @ E
   {{{ c chanref lk, RET (c);
-    is_channel_alloc chanref lk false t P ∗
-    ⌜c = InjRV (#chanref, lk)⌝}}}.
+    is_channel_alloc chanref lk false ty P ∗
+    ⌜c = InjRV (#cap, #chanref, lk)⌝}}}.
 Proof.
   iIntros (Φ) "%Ht HΦ".
   wp_lam.
+  wp_pures.
   wp_apply wp_alloc_untyped.
   { eauto. }
   iIntros (chanref) "Hc".
@@ -106,7 +94,7 @@ Proof.
     iFrame.
     eauto.
   }
-  iExists cap, _, nil.
+  iExists cap, nil.
   unfold own_chan.
   iModIntro.
   unfold chan_contents.
@@ -114,106 +102,153 @@ Proof.
   eauto.
 Qed.
 
-Theorem wp_IncCap chanref cap (eff_cap: Z) closed ty l:
-    {{{ own_chan chanref cap eff_cap closed ty l}}}
-        IncCap #chanref
-    {{{ RET #(); own_chan chanref cap (int.Z (word.add 1 eff_cap)) closed ty l}}}.
+Theorem wp_ChanCap c closed ty (P : val -> iProp Σ):
+  {{{ is_channel c closed ty P }}}
+    ChanCap c
+  {{{ (cap: Z), RET #(cap); (⌜#cap = #0⌝ ∗ ⌜c = InjLV #()⌝) ∨ (∃ chanref lk, ⌜c = InjRV (#cap, #chanref, lk)⌝)}}}.
 Proof.
-    iIntros (Φ) "HPre HΦ".
-    wp_lam.
-    destruct closed.
-    - iNamed "HPre". 
-      wp_untyped_load.
-      wp_pures.
-      iApply "HΦ".
-      iModIntro.
-      iFrame.
-    - wp_untyped_load.
-      wp_pures.
-      wp_untyped_store.
-      iApply "HΦ".
-      iModIntro.
-      unfold own_chan.
-      rewrite u64_Z.
-      iFrame.
-Qed.
-
-
-Theorem wp_DecCap chanref cap (eff_cap: Z) closed ty l:
-    {{{ own_chan chanref cap eff_cap closed ty l}}}
-        DecCap #chanref
-    {{{ RET #(); own_chan chanref cap (int.Z (word.sub eff_cap 1)) closed ty l}}}.
-Proof.
-    iIntros (Φ) "HPre HΦ".
-    wp_lam.
-    destruct closed.
-    - iNamed "HPre".
-      wp_untyped_load.
-      wp_pures.
-      iApply "HΦ".
-      iModIntro.
-      iFrame.
-    - wp_untyped_load.
-      wp_pures.
-      wp_untyped_store.
-      iApply "HΦ".
-      iModIntro.
-      unfold own_chan.
-      rewrite u64_Z.
-      iFrame.
-Qed.
-
-Theorem wp_InnerReceive chanref cap eff_cap closed ty l:
-    {{{ own_chan chanref cap eff_cap closed ty l}}}
-        InnerReceive #chanref
-    {{{RET ((peek (zero_val ty) l, #(negb (closed_and_empty closed l)), #(valid_return closed l))); own_chan chanref cap eff_cap closed ty (tail l)}}}.
-Proof.
-    iIntros (Φ) "HPre HΦ".
-    wp_lam.
-    destruct closed.
-    - iNamed "HPre".
-      wp_untyped_load.
-      wp_pures.
-      destruct l.
-      + simpl.
-        wp_pures.
-        iModIntro.
-        iApply "HΦ".
-        iFrame.
-      + simpl.
-        wp_pures.
-        subst.
-        wp_untyped_store.
-        wp_pures.
-        iModIntro.
-        iApply "HΦ".
-        iFrame.
-    - wp_untyped_load.
-      wp_pures.
-      destruct l.
-      + simpl.
-        wp_pures.
-        iModIntro.
-        iApply "HΦ".
-        iFrame.
-      + simpl.
-        wp_pures.
-        wp_untyped_store.
-        wp_pures.
-        iModIntro.
-        iApply "HΦ".
-        iFrame.
-Qed.
-
-(* Now False? *)
-(* Lemma closed_nil chanref cap eff_cap ty l :
-  own_chan chanref cap eff_cap true ty l -∗ ⌜l = nil⌝.
-Proof.
-  iIntros "HPre".
-  unfold own_chan.
+  iIntros (Φ) "HPre HΦ".
+  wp_lam.
+  unfold is_channel.
   iNamed "HPre".
-  done.
-Qed. *)
+Admitted.
+
+(* Theorem wp_CloseChan (chanref : loc) lk ty P:
+    {{{ is_channel_alloc chanref lk false ty P}}}
+        CloseChan' (InjRV(#chanref, lk))
+    {{{ RET #(); is_channel_alloc chanref lk true ty P}}}.
+Proof.
+  iIntros (Φ) "HPre HΦ".
+  wp_lam.
+  wp_pures.
+  iDestruct "HPre" as "#Hlock".
+  wp_apply acquire_spec.
+  - iFrame "Hlock".
+  - iIntros "[H0 H1]".
+    wp_pures.
+    iNamed "H1".
+    iDestruct "H1" as "[H1 [%H2 H3]]".
+    wp_untyped_load.
+    wp_pures.
+    wp_untyped_store.
+    wp_apply (release_spec with "[H0 H3 H1]").
+    { unfold is_channel_alloc. 
+      iFrame "Hlock".
+      iFrame.
+      iNext.
+      admit.
+    }
+    iApply "HΦ".
+    eauto.
+    wp_apply release_spec.
+    { iFrame "Hlock". }
+    iModIntro.
+    iApply "HΦ".
+    iFrame.
+    Admitted. *)
+
+Lemma wp_IncCap chanref (eff_cap: Z) closed ty l (P : val -> iProp Σ):
+  {{{ own_chan chanref eff_cap closed ty l P}}}
+      IncCap #chanref
+  {{{ RET #(); own_chan chanref (int.Z (word.add 1 eff_cap)) closed ty l P}}}.
+Proof.
+  iIntros (Φ) "HPre HΦ".
+  wp_lam.
+  iDestruct "HPre" as "[%H1 [H2 H3]]".
+  destruct closed.
+  - wp_untyped_load.
+    wp_pures.
+    iApply "HΦ".
+    iModIntro.
+    iFrame.
+    eauto.
+  - wp_untyped_load.
+    wp_pures.
+    wp_untyped_store.
+    iApply "HΦ".
+    iModIntro.
+    unfold own_chan.
+    rewrite u64_Z.
+    iFrame.
+    eauto.
+Qed.
+
+Lemma wp_DecCap chanref (eff_cap: Z) closed ty l (P : val -> iProp Σ):
+  {{{ own_chan chanref eff_cap closed ty l P}}}
+      DecCap #chanref
+  {{{ RET #(); own_chan chanref (int.Z (word.sub eff_cap 1)) closed ty l P}}}.
+Proof.
+  iIntros (Φ) "HPre HΦ".
+  wp_lam.
+  iDestruct "HPre" as "[%H1 [H2 H3]]".
+  destruct closed.
+  - wp_untyped_load.
+    wp_pures.
+    iApply "HΦ".
+    iModIntro.
+    iFrame.
+    eauto.
+  - wp_untyped_load.
+    wp_pures.
+    wp_untyped_store.
+    iApply "HΦ".
+    iModIntro.
+    unfold own_chan.
+    rewrite u64_Z.
+    iFrame.
+    eauto.
+Qed.
+
+Theorem wp_InnerReceive chanref eff_cap closed ty l (P : val -> iProp Σ):
+  {{{ own_chan chanref eff_cap closed ty l P}}}
+      InnerReceive #chanref
+  {{{RET ((peek (zero_val ty) l, #(non_empty l), #(valid_return closed l))); 
+      own_chan chanref eff_cap closed ty (tail l) P ∗ 
+      ⌜val_ty (peek (zero_val ty) l) ty⌝ ∗ if (andb (non_empty l) (valid_return closed l)) then P (peek (zero_val ty) l) else ⌜(peek (zero_val ty) l) = zero_val ty⌝}}}.
+Proof.
+  iIntros (Φ) "HPre HΦ".
+  wp_lam.
+  unfold own_chan.
+  iDestruct "HPre" as "[%H1 [H2 H3]]".
+  destruct closed.
+  - wp_untyped_load.
+    wp_pures.
+    destruct l.
+    + simpl.
+      wp_pures.
+      iModIntro.
+      iApply "HΦ".
+      iFrame.
+      eauto.
+    + simpl.
+      wp_pures.
+      subst.
+      wp_untyped_store.
+      wp_pures.
+      iModIntro.
+      iApply "HΦ".
+      iDestruct "H3" as "[[H3 H4] H5]".
+      iFrame.
+      eauto.
+  - wp_untyped_load.
+    wp_pures.
+    destruct l.
+    + simpl.
+      wp_pures.
+      iModIntro.
+      iApply "HΦ".
+      iFrame.
+      eauto.
+    + simpl.
+      wp_pures.
+      wp_untyped_store.
+      wp_pures.
+      iModIntro.
+      iApply "HΦ".
+      iDestruct "H3" as "[[H3 H4] H5]".
+      iFrame.
+      eauto.
+Qed.
 
 Theorem wp_TryReceive (chanref : loc) lk closed ty P:
     {{{ is_channel_alloc chanref lk closed ty P}}}
@@ -231,63 +266,10 @@ Proof.
     wp_pures.
     iNamed "H1".
     destruct closed.
-    + iDestruct "H1" as "[H1 [%H2 H3]]".
-      iNamed "H1".
-      wp_apply (wp_IncCap chanref cap eff_cap _ ty l with "H1").
+    + wp_apply (wp_IncCap chanref eff_cap true ty l P with "H1").
       iIntros "H1".
       wp_pures.
-      wp_apply (release_spec with "[H0 H1 H3]").
-      { unfold is_channel_alloc. iFrame "Hlock". iFrame. iNext. eauto. }
-      wp_pures.
-      wp_apply acquire_spec.
-      { unfold is_channel_alloc. iFrame "Hlock". }
-      iIntros "[H0 H1]".
-      wp_pures.
-      iNamed "H1".
-      iDestruct "H1" as "[H1 [H3 H4]]".
-      wp_apply (wp_InnerReceive _ _ _ _ _ _ with "[H1]").
-      { iFrame. }
-      iIntros "H1".
-      wp_pures.
-      wp_apply (wp_DecCap chanref _ _ _ ty _ with "[H1]").
-      { iFrame. }
-      iIntros "H1".
-      wp_pures.
-      destruct l0.
-      * wp_apply (release_spec with "[H0 H3 H1]").
-        { unfold is_channel_alloc. 
-          iFrame "Hlock".
-          iFrame.
-          iNext.
-          done.
-        }
-        wp_pures.
-        iModIntro.
-        iApply "HΦ".
-        eauto.
-      * simpl.
-        iDestruct "H4" as "[H4 H5]".
-        wp_apply (release_spec with "[H0 H5 H1]").
-        { unfold is_channel_alloc. 
-          iFrame "Hlock".
-          iFrame.
-          iNext.
-          done.
-        }
-        wp_pures.
-        iModIntro.
-        iApply "HΦ".
-        iFrame.
-        simpl.
-        iDestruct "H4" as "[H4 H5]".
-        eauto.
-    + iDestruct "H1" as "[H1 [H2 H3]]".
-      iNamed "H1".
-      wp_pures.
-      wp_apply (wp_IncCap chanref cap eff_cap _ ty l with "H1").
-      iIntros "H1".
-      wp_pures.
-      wp_apply (release_spec with "[H0 H2 H1 H3]").
+      wp_apply (release_spec with "[H0 H1]").
       { unfold is_channel_alloc. iFrame "Hlock". iFrame. }
       wp_pures.
       wp_apply acquire_spec.
@@ -295,12 +277,63 @@ Proof.
       iIntros "[H0 H1]".
       wp_pures.
       iNamed "H1".
-      iDestruct "H1" as "[H1 [%H2 H3]]".
+      destruct l0.
+      * wp_apply (wp_InnerReceive _ _ true _ _ _ with "[H1]").
+        { iFrame. }
+        iIntros "H1".
+        simpl.
+        wp_pures.
+        iDestruct "H1" as "[H1 [H2 H3]]".
+        wp_apply (wp_DecCap chanref _ _ ty _ with "[H1]").
+        { iFrame. }
+        iIntros "H1".
+        wp_pures.
+        wp_apply (release_spec with "[H0 H1]").
+        { unfold is_channel_alloc. 
+          iFrame "Hlock".
+          iFrame.
+        }
+        wp_pures.
+        iModIntro.
+        iApply "HΦ".
+        simpl.
+        eauto.
+      * wp_apply (wp_InnerReceive chanref eff_cap0 true ty _ P with "[H1]").
+        { iFrame. }
+        iIntros "H1".
+        wp_pures.
+        iDestruct "H1" as "[H1 [H2 H3]]".
+        wp_apply (wp_DecCap chanref _ _ ty _ with "[H1]").
+        { iFrame. }
+        iIntros "H1".
+        wp_pures.
+        wp_apply (release_spec with "[H0 H1]").
+        { unfold is_channel_alloc. 
+          iFrame "Hlock".
+          iFrame.
+        }
+        wp_pures.
+        iModIntro.
+        iApply "HΦ".
+        iFrame.
+    + 
+      wp_apply (wp_IncCap chanref eff_cap false ty l P with "H1").
+      iIntros "H1".
+      wp_pures.
+      wp_apply (release_spec with "[H0 H1]").
+      { unfold is_channel_alloc. iFrame "Hlock". iFrame. }
+      wp_pures.
+      wp_apply acquire_spec.
+      { unfold is_channel_alloc. iFrame "Hlock". }
+      iIntros "[H0 H1]".
+      wp_pures.
+      iNamed "H1".
       wp_apply (wp_InnerReceive _ _ _ _ _ _ with "[H1]").
       { iFrame. }
       iIntros "H1".
       wp_pures.
-      wp_apply (wp_DecCap chanref _ _ _ ty _ with "[H1]").
+      iDestruct "H1" as "[H1 [H2 H3]]".
+      wp_apply (wp_DecCap chanref _ _ ty _ with "[H1]").
       { iFrame. }
       iIntros "H1".
       wp_pures.
@@ -309,34 +342,28 @@ Proof.
         { unfold is_channel_alloc. 
           iFrame "Hlock".
           iFrame.
-          iNext.
-          done.
         }
         wp_pures.
         iModIntro.
         iApply "HΦ".
         eauto.
       * simpl.
-        iDestruct "H3" as "[H3 H4]".
-        wp_apply (release_spec with "[H0 H4 H1]").
+        wp_apply (release_spec with "[H0 H1]").
         { unfold is_channel_alloc. 
           iFrame "Hlock".
           iFrame.
-          iNext.
-          done.
         }
         wp_pures.
         iModIntro.
         iApply "HΦ".
-        iDestruct "H3" as "[H3 H4]".
         iFrame.
 Qed.
 
-Theorem wp_ChannelReceive (chanref : loc) lk closed ty P:
+Theorem wp_ChannelReceive cap (chanref : loc) lk closed ty P:
     {{{ is_channel_alloc chanref lk closed ty P}}}
-      ChannelReceive (InjRV(#chanref, lk))
-    {{{(a : val) (open : bool),
-      RET ((a, #(open))); ⌜val_ty a ty⌝ ∗ if (open) then P a else ⌜a = zero_val ty⌝}}}.
+      ChannelReceive (InjRV(cap, #chanref, lk))
+    {{{(a : val) (ok : bool),
+      RET ((a, #(ok))); ⌜val_ty a ty⌝ ∗ if (ok) then P a else ⌜a = zero_val ty⌝}}}.
 Proof.
   iIntros (Φ) "#HPre HΦ".
   wp_lam.
@@ -382,15 +409,17 @@ Proof.
     lia.
 Qed.
 
-(* Lemma wp_ChanLen (chanref : loc) closed lk ty P:
-    {{{ is_channel_alloc chanref lk closed ty P}}}
-        ChanLen (#chanref, lk)%V
-    {{{(len : Z) (success : bool), RET (#(len), #(success)); True}}}.
+Lemma wp_ChanLen c closed ty P:
+  {{{ is_channel c closed ty P }}}
+    ChanLen c
+  {{{ (len: Z), RET #(len); (⌜#len = #0⌝ ∗ ⌜c = InjLV #()⌝) ∨ (∃ (cap: Z) chanref lk, ⌜c = InjRV (#cap, #chanref, lk)⌝ ∗ ⌜0 <= len <= cap⌝)}}}.
 Proof.
   iIntros (Φ) "HPre HΦ".
-  wp_pures.
   wp_lam.
-  wp_pures.
+  unfold is_channel.
+  iDestruct "HPre" as "[HPre | HPre]".
+  Admitted.
+  (* wp_pures.
   iDestruct "HPre" as "#Hlock".
   wp_apply acquire_spec.
   - iFrame "Hlock".
@@ -430,7 +459,7 @@ Proof.
       Unshelve.
       { eauto. }
       eauto.
-Qed.  *)
+Qed. *)
 
 Lemma wp_ChanAppend ty (l : list val) v:
     {{{ True }}}
@@ -460,7 +489,6 @@ Theorem wp_TrySend (chanref : loc) (v : val) lk ty P:
     {{{(success : bool), RET (#(success)); if success then True else P v ∗ ⌜val_ty v ty⌝}}}.
 Proof.
   iIntros (Φ) "[HPre Hv] HΦ".
-  wp_pures.
   wp_lam.
   wp_pures.
   iDestruct "HPre" as "#Hlock".
@@ -470,7 +498,6 @@ Proof.
       wp_pures.
       iNamed "H1".
       iDestruct "H1" as "[H1 [H2 H3]]".
-      unfold own_chan.
       wp_untyped_load.
       wp_pures.
       wp_apply wp_ChanLen'.
@@ -483,7 +510,7 @@ Proof.
         wp_apply (release_spec with "[Hlock Hv H0 H1 H2 H3]").
         { iFrame "Hlock H0".
           iNext.
-          iExists cap, eff_cap, (l ++ [v]).
+          iExists eff_cap, (l ++ [v]).
           iFrame.
           eauto.
         }
@@ -495,7 +522,7 @@ Proof.
         { iFrame "H0".
           iFrame "Hlock".
           iNext.
-          iExists cap, eff_cap, l.
+          iExists eff_cap, l.
           iFrame.
         }
         wp_pures.
@@ -505,10 +532,10 @@ Proof.
 Qed.
 
 (* Try iLob induction *)
-Theorem wp_ChannelSend (chanref : loc) (v : val) lk ty P:
+Theorem wp_ChannelSend cap (chanref : loc) (v : val) lk ty P:
     {{{ is_channel_alloc chanref lk false ty P ∗ P v ∗ ⌜val_ty v ty⌝ }}}
-        ChannelSend (InjRV(#chanref, lk)) v
-    {{{(success : bool), RET (#(success)); True}}}.
+        ChannelSend (InjRV(cap, #chanref, lk)) v
+    {{{RET #(); True}}}.
 Proof.
   iIntros (Φ) "[#HPre Hv] HΦ".
   wp_lam.
@@ -526,6 +553,7 @@ Proof.
     + wp_pures.
       wp_apply ("IH" with "Hv").
       iApply "HΦ".
+      done.
 Qed.
 
 End heap.
