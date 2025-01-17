@@ -39,7 +39,7 @@ Definition ChanCap: val :=
   λ: "channel",
     match: "channel" with
       InjL "nullv" => #0
-    | InjR "chan" => Fst (Fst "chan")
+    | InjR "chan" => (Fst (Fst "chan"))
     end.
 
 (* return value: (return element, channel is non-empty, return is valid) *)
@@ -99,10 +99,13 @@ Definition TryReceive: val :=
       lock.release "lock";;
       "r".
 
+Definition InfiniteLoop: val :=
+  (rec: "loop" <> := Var "loop" #()).
+
 Definition ChannelReceive: val :=
   λ: "channel",
   match: "channel" with
-    InjL "nullV" => Assume
+    InjL "nullV" => InfiniteLoop #()
   | InjR "chan" =>
       let: "cap" := Fst (Fst "chan") in
       let: "chanref" := Snd (Fst "chan") in
@@ -134,9 +137,13 @@ Definition ChanLen: val :=
         let: "chanref" := Snd (Fst "chan") in
         let: "lock" := Snd "chan" in
           lock.acquire "lock";;
-          let: "eff_len" := (let: "con" := Snd "chanref" in  ChanLen' "con") in
-            lock.release "lock";; 
-            if: "eff_len" < "cap" then "eff_len"
+          let: "eff_len" := (let: "con" := 
+            (match: !"chanref" with
+              InjL "closed" => "closed"
+            | InjR "open" => Snd "open" 
+            end) in ChanLen' "con") in
+            lock.release "lock";;
+            if: ("eff_len" < "cap") then "eff_len"
             else "cap"
     end.
 
@@ -174,7 +181,7 @@ Definition Assume: val :=
 Definition ChannelSend: val :=
   λ: "channel" "v",
   match: "channel" with
-    InjL "nullV" => Assume
+    InjL "nullv" => InfiniteLoop #()
   | InjR "chan" =>
       let: "cap" := Fst (Fst "chan") in
       let: "chanref" := Snd (Fst "chan") in

@@ -105,47 +105,26 @@ Qed.
 Theorem wp_ChanCap c closed ty (P : val -> iProp Σ):
   {{{ is_channel c closed ty P }}}
     ChanCap c
-  {{{ (cap: Z), RET #(cap); (⌜#cap = #0⌝ ∗ ⌜c = InjLV #()⌝) ∨ (∃ chanref lk, ⌜c = InjRV (#cap, #chanref, lk)⌝)}}}.
+  {{{ (cap: val), RET (cap); (⌜cap = #0⌝ ∗ ⌜c = InjLV #()⌝) ∨ (∃ chanref lk, ⌜c = InjRV (cap, #chanref, lk)⌝)}}}.
 Proof.
   iIntros (Φ) "HPre HΦ".
   wp_lam.
   unfold is_channel.
-  iNamed "HPre".
-Admitted.
-
-(* Theorem wp_CloseChan (chanref : loc) lk ty P:
-    {{{ is_channel_alloc chanref lk false ty P}}}
-        CloseChan' (InjRV(#chanref, lk))
-    {{{ RET #(); is_channel_alloc chanref lk true ty P}}}.
-Proof.
-  iIntros (Φ) "HPre HΦ".
-  wp_lam.
-  wp_pures.
-  iDestruct "HPre" as "#Hlock".
-  wp_apply acquire_spec.
-  - iFrame "Hlock".
-  - iIntros "[H0 H1]".
+  iDestruct "HPre" as "[HPre | HPre]".
+  - iDestruct "HPre" as "[%Hc Hty]".
+    subst.
     wp_pures.
-    iNamed "H1".
-    iDestruct "H1" as "[H1 [%H2 H3]]".
-    wp_untyped_load.
-    wp_pures.
-    wp_untyped_store.
-    wp_apply (release_spec with "[H0 H3 H1]").
-    { unfold is_channel_alloc. 
-      iFrame "Hlock".
-      iFrame.
-      iNext.
-      admit.
-    }
-    iApply "HΦ".
-    eauto.
-    wp_apply release_spec.
-    { iFrame "Hlock". }
     iModIntro.
     iApply "HΦ".
-    iFrame.
-    Admitted. *)
+    eauto.
+  - iNamed "HPre".
+    iDestruct "HPre" as "[Hchan %Hc]".
+    subst.
+    wp_pures.
+    iModIntro.
+    iApply "HΦ".
+    eauto.
+Qed.
 
 Lemma wp_IncCap chanref (eff_cap: Z) closed ty l (P : val -> iProp Σ):
   {{{ own_chan chanref eff_cap closed ty l P}}}
@@ -418,6 +397,38 @@ Proof.
   wp_lam.
   unfold is_channel.
   iDestruct "HPre" as "[HPre | HPre]".
+  - iNamed "HPre".
+    iDestruct "HPre" as "[%Hc %Hty]".
+    subst.
+    wp_pures.
+    iModIntro.
+    iApply "HΦ".
+    eauto.
+  - iNamed "HPre".
+    iDestruct "HPre" as "[#Hlock %Hc]".
+    subst.
+    wp_pures.
+    wp_apply acquire_spec.
+    { iFrame "Hlock". }
+    unfold is_channel_alloc.
+    iIntros "[H0 H1]".
+    wp_pures.
+    iNamed "H1".
+    destruct closed.
+    + unfold own_chan.
+      iDestruct "H1" as "[%H1 [H2 H3]]".
+      wp_untyped_load.
+      wp_pures.
+      wp_apply wp_ChanLen'.
+      iIntros (len) "%Hlen".
+      wp_pures.
+      wp_apply (release_spec with "[Hlock H0 H2 H3]").
+      { iFrame "Hlock".
+        iFrame.
+        eauto.
+      }
+      wp_pures.
+      (* wp_if_destruct. *)
   Admitted.
   (* wp_pures.
   iDestruct "HPre" as "#Hlock".
